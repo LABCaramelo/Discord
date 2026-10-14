@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { ME, directMessages, servers, users } from './data';
-import { useAppStore, voiceParticipants } from './store';
-import { playVoiceSound, useLocalMedia, useMicSpeaking, useSimulatedSpeakers } from './voice';
+import { useAppStore } from './store';
+import { colorFor, playVoiceSound, useVoiceOccupancy, useVoiceSession } from './voice';
 import { Avatar } from './components/Avatar';
 import { Chat } from './components/Chat';
 import { FriendsView } from './components/Friends';
 import { MemberList } from './components/MemberList';
+import { NamePrompt } from './components/NamePrompt';
 import { ServerRail } from './components/ServerRail';
 import { ChannelIcon, HomeSidebar, ServerSidebar, type VoiceUi } from './components/Sidebar';
 import { TitleBar } from './components/TitleBar';
@@ -13,21 +14,17 @@ import { VoiceView } from './components/VoiceView';
 
 export function App() {
   const [state, dispatch] = useAppStore();
-  const { view } = state;
+  const { view, profile } = state;
 
-  // Voz: microfone real para você, falas simuladas para os outros participantes da sua sala.
-  const mic = useMicSpeaking(!!state.voice, state.muted);
-  const others = state.voice ? voiceParticipants(state.voice.channelId, null) : [];
-  const simulated = useSimulatedSpeakers(others);
-  const speaking = useMemo(() => {
-    const set = new Set(simulated);
-    if (mic.speaking) set.add(ME);
-    return set;
-  }, [simulated, mic.speaking]);
-  const media = useLocalMedia(!!state.voice);
-  const voiceUi: VoiceUi = { speaking, micError: mic.error, media };
+  // O usuário "você" do diretório local passa a ter o nome e a cor deste visitante,
+  // para o chat, a lista de membros e as salas de voz mostrarem a mesma pessoa.
+  users[ME] = { ...users[ME], name: profile.name || 'você', color: colorFor(profile.id) };
 
+  const session = useVoiceSession(state.voice, profile, state.muted, state.deafened);
   const voiceKey = state.voice ? `${state.voice.serverId}:${state.voice.channelId}` : null;
+  const occupancy = useVoiceOccupancy(voiceKey);
+  const voiceUi: VoiceUi = { session, occupancy };
+
   const prevVoiceKey = useRef(voiceKey);
   useEffect(() => {
     if (prevVoiceKey.current === voiceKey) return;
@@ -50,9 +47,8 @@ export function App() {
         serverId={server.id}
         channel={channel}
         state={state}
-        speaking={speaking}
-        micError={mic.error}
-        media={media}
+        session={session}
+        occupancy={occupancy}
         dispatch={dispatch}
       />
     ) : (
@@ -122,6 +118,7 @@ export function App() {
           <div className="app-content">{content}</div>
         </div>
       </div>
+      {(!profile.name || state.editingName) && <NamePrompt current={profile.name} dispatch={dispatch} />}
     </div>
   );
 }

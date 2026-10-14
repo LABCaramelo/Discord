@@ -1,5 +1,5 @@
 import { useEffect, useReducer } from 'react';
-import { ME, seedMessages, servers, voiceOccupants } from './data';
+import { ME, seedMessages, servers } from './data';
 import type { Message, Status } from './types';
 
 export type View = { kind: 'home'; dmId: string | null } | { kind: 'server'; serverId: string };
@@ -9,7 +9,15 @@ export interface VoiceConnection {
   channelId: string;
 }
 
+/** Quem é este visitante nas salas de voz: id estável por navegador e nome escolhido. */
+export interface Profile {
+  id: string;
+  name: string;
+}
+
 export interface State {
+  profile: Profile;
+  editingName: boolean;
   view: View;
   channelByServer: Record<string, string>;
   voice: VoiceConnection | null;
@@ -33,7 +41,9 @@ export type Action =
   | { type: 'toggleMembers' }
   | { type: 'toggleMute' }
   | { type: 'toggleDeafen' }
-  | { type: 'setStatus'; status: Status };
+  | { type: 'setStatus'; status: Status }
+  | { type: 'setName'; name: string }
+  | { type: 'editName'; open: boolean };
 
 const STORAGE_KEY = 'discord-clone:v1';
 
@@ -53,14 +63,10 @@ export function findChannel(serverId: string, channelId: string) {
     .find((c) => c.id === channelId);
 }
 
-/** Participantes de um canal de voz: os fictícios mais você, se estiver conectado nele. */
-export function voiceParticipants(channelId: string, voice: VoiceConnection | null): string[] {
-  const others = voiceOccupants[channelId] ?? [];
-  return voice?.channelId === channelId ? [...others, ME] : others;
-}
-
 function initialState(): State {
   const fallback: State = {
+    profile: { id: crypto.randomUUID(), name: '' },
+    editingName: false,
     view: { kind: 'server', serverId: servers[0].id },
     channelByServer: Object.fromEntries(servers.map((s) => [s.id, firstTextChannel(s.id)])),
     voice: null,
@@ -74,7 +80,7 @@ function initialState(): State {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     // A conexão de voz depende do microfone aberto, então nunca é restaurada.
-    if (saved) return { ...fallback, ...JSON.parse(saved), voice: null };
+    if (saved) return { ...fallback, ...JSON.parse(saved), voice: null, editingName: false };
   } catch {
     // armazenamento indisponível ou corrompido: usa os dados de exemplo
   }
@@ -129,6 +135,12 @@ function reducer(state: State, action: Action): State {
       return { ...state, deafened: !state.deafened, muted: !state.deafened };
     case 'setStatus':
       return { ...state, myStatus: action.status };
+    case 'setName': {
+      const name = action.name.trim().slice(0, 32);
+      return name ? { ...state, profile: { ...state.profile, name }, editingName: false } : state;
+    }
+    case 'editName':
+      return { ...state, editingName: action.open };
   }
 }
 

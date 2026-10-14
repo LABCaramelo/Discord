@@ -16,16 +16,15 @@ import {
   Speaker,
   Video,
 } from '../icons';
-import { findChannel, voiceParticipants, type Action, type State } from '../store';
+import { findChannel, type Action, type State } from '../store';
 import type { Channel, Server, Status } from '../types';
-import type { LocalMedia } from '../voice';
+import { memberUser, type Occupancy, type VoiceMember, type VoiceSession } from '../voice';
 import { Avatar, statusLabel } from './Avatar';
 
-/** Estado de voz que as barras laterais precisam para desenhar quem fala e o painel de conexão. */
+/** Estado de voz que as barras laterais precisam: a chamada atual e quem está em cada canal. */
 export interface VoiceUi {
-  speaking: Set<string>;
-  micError: string | null;
-  media: LocalMedia;
+  session: VoiceSession;
+  occupancy: Occupancy;
 }
 
 export function ChannelIcon({ channel, size = 20 }: { channel: Channel; size?: number }) {
@@ -93,32 +92,38 @@ export function ServerSidebar({ server, state, voiceUi, dispatch }: ServerSideba
 }
 
 function VoiceUserList({ channelId, state, voiceUi }: { channelId: string; state: State; voiceUi: VoiceUi }) {
-  const ids = voiceParticipants(channelId, state.voice);
-  if (!ids.length) return null;
-  const { speaking, media } = voiceUi;
+  const { session, occupancy } = voiceUi;
+  // No canal em que você está, a lista vem da própria chamada (ao vivo); nos outros, do servidor.
+  const live = state.voice?.channelId === channelId && session.members.length > 0;
+  const people: VoiceMember[] = live
+    ? session.members
+    : (occupancy[channelId] ?? [])
+        .filter((p) => p.identity !== state.profile.id)
+        .map((p) => ({ ...p, isLocal: false, speaking: false, micMuted: false, camera: null, screen: null }));
+  if (!people.length) return null;
+
   return (
     <ul className="voice-users">
-      {ids.map((id) => {
-        const u = users[id];
-        const isMe = id === ME;
+      {people.map((m) => {
+        const deafened = m.isLocal && state.deafened;
         return (
-          <li key={id} className={`voice-user ${speaking.has(id) ? 'speaking' : ''}`}>
-            <Avatar user={u} size={24} speaking={speaking.has(id)} />
-            <span className="voice-user-name">{u.name}</span>
-            {isMe && (state.muted || state.deafened || media.camera || media.screen) && (
+          <li key={m.identity} className={`voice-user ${m.speaking ? 'speaking' : ''}`}>
+            <Avatar user={memberUser(m)} size={24} speaking={m.speaking} />
+            <span className="voice-user-name">{m.name}</span>
+            {(m.micMuted || deafened || m.camera || m.screen) && (
               <span className="voice-user-flags">
-                {media.camera && (
+                {m.camera && (
                   <span className="voice-user-icon" title="Câmera ligada">
                     <Video size={14} />
                   </span>
                 )}
-                {media.screen && <span className="live-badge small">AO VIVO</span>}
-                {state.muted && (
+                {m.screen && <span className="live-badge small">AO VIVO</span>}
+                {m.micMuted && (
                   <span className="slashed" title="Microfone silenciado">
                     <Mic size={14} />
                   </span>
                 )}
-                {state.deafened && (
+                {deafened && (
                   <span className="slashed" title="Áudio desativado">
                     <Headphones size={14} />
                   </span>
@@ -132,23 +137,33 @@ function VoiceUserList({ channelId, state, voiceUi }: { channelId: string; state
   );
 }
 
+const panelStatus: Record<VoiceSession['status'], { label: string; tone: string }> = {
+  idle: { label: 'Voz conectada', tone: '' },
+  connecting: { label: 'Conectando…', tone: 'warn' },
+  connected: { label: 'Voz conectada', tone: '' },
+  reconnecting: { label: 'Reconectando…', tone: 'warn' },
+  error: { label: 'Falha na conexão', tone: 'error' },
+};
+
 function VoiceConnectedPanel({ state, voiceUi, dispatch }: { state: State; voiceUi: VoiceUi; dispatch: (a: Action) => void }) {
   if (!state.voice) return null;
+  const { session } = voiceUi;
   const { serverId, channelId } = state.voice;
   const channel = findChannel(serverId, channelId)!;
   const server = servers.find((s) => s.id === serverId)!;
+  const status = panelStatus[session.status];
+  const problem = session.error ?? session.deviceError;
   return (
     <div className="voice-panel">
       <div className="voice-panel-row">
         <div className="voice-panel-info">
-          <span className={`voice-panel-status ${voiceUi.micError ? 'warn' : ''}`}>
+          <span className={`voice-panel-status ${status.tone}`}>
             <Signal size={16} />
-            {voiceUi.micError ? 'Sem microfone' : 'Voz conectada'}
+            {status.label}
           </span>
           <button
             className="voice-panel-channel"
             onClick={() => dispatch({ type: 'openChannel', serverId, channelId })}
-            title={voiceUi.micError ?? undefined}
           >
             {channel.name} / {server.name}
           </button>
@@ -164,25 +179,27 @@ function VoiceConnectedPanel({ state, voiceUi, dispatch }: { state: State; voice
       </div>
       <div className="voice-panel-buttons">
         <button
-          className={voiceUi.media.camera ? 'on' : ''}
-          onClick={voiceUi.media.toggleCamera}
-          aria-label={voiceUi.media.camera ? 'Desligar câmera' : 'Ligar câmera'}
-          aria-pressed={!!voiceUi.media.camera}
-          title={voiceUi.media.camera ? 'Desligar câmera' : 'Ligar câmera'}
+          className={session.cameraOn ? 'on' : ''}
+          onClick={session.toggleCamera}
+          disabled={session.status !== 'connected'}
+          aria-label={session.cameraOn ? 'Desligar câmera' : 'Ligar câmera'}
+          aria-pressed={session.cameraOn}
+          title={session.cameraOn ? 'Desligar câmera' : 'Ligar câmera'}
         >
           <Video size={18} />
         </button>
         <button
-          className={voiceUi.media.screen ? 'on' : ''}
-          onClick={voiceUi.media.toggleScreen}
-          aria-label={voiceUi.media.screen ? 'Parar transmissão' : 'Compartilhar tela'}
-          aria-pressed={!!voiceUi.media.screen}
-          title={voiceUi.media.screen ? 'Parar transmissão' : 'Compartilhar tela'}
+          className={session.screenOn ? 'on' : ''}
+          onClick={session.toggleScreen}
+          disabled={session.status !== 'connected'}
+          aria-label={session.screenOn ? 'Parar transmissão' : 'Compartilhar tela'}
+          aria-pressed={session.screenOn}
+          title={session.screenOn ? 'Parar transmissão' : 'Compartilhar tela'}
         >
           <ScreenShare size={18} />
         </button>
       </div>
-      {voiceUi.media.error && <p className="voice-panel-error">{voiceUi.media.error}</p>}
+      {problem && <p className="voice-panel-error">{problem}</p>}
     </div>
   );
 }
@@ -263,6 +280,16 @@ function UserPanel({ state, dispatch }: { state: State; dispatch: (a: Action) =>
               {statusLabel[s]}
             </button>
           ))}
+          <div className="status-menu-separator" />
+          <button
+            role="menuitem"
+            onClick={() => {
+              dispatch({ type: 'editName', open: true });
+              setMenuOpen(false);
+            }}
+          >
+            Alterar nome
+          </button>
         </div>
       )}
       <div className="user-panel-actions">

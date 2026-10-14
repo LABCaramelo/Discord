@@ -111,14 +111,6 @@ export const servers: Server[] = [
   },
 ];
 
-/** Quem já está em cada canal de voz quando o app abre. */
-export const voiceOccupants: Record<string, string[]> = {
-  'ch-lounge': ['u-diego'],
-  'ch-pair': ['u-ana', 'u-carla'],
-  'ch-g-squad': ['u-ana', 'u-diego'],
-  'ch-e-sala': ['u-carla'],
-};
-
 export const directMessages: DirectMessage[] = [
   { id: 'dm-ana', userId: 'u-ana' },
   { id: 'dm-diego', userId: 'u-diego' },

@@ -1,205 +1,55 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Room, RoomEvent, Track, type Participant } from 'livekit-client';
+import type { Profile, VoiceConnection } from './store';
+import type { User } from './types';
 
-/** Volume (RMS, 0–1) acima do qual consideramos que há fala no microfone. */
-const SPEAKING_THRESHOLD = 0.04;
-/** Mantém o anel aceso um pouco depois da fala parar, para não piscar entre sílabas. */
-const SPEAKING_HOLD_MS = 250;
+/* ---------------------------------------------------------------- tipos */
 
-/**
- * Abre o microfone enquanto `active` for verdadeiro e informa se o usuário está falando.
- * O stream continua aberto quando silenciado (como no Discord); só o indicador é desligado.
- */
-export function useMicSpeaking(active: boolean, muted: boolean) {
-  const [speaking, setSpeaking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!active) {
-      setError(null);
-      return;
-    }
-    let cancelled = false;
-    let stream: MediaStream | null = null;
-    let ctx: AudioContext | null = null;
-    let raf = 0;
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setError('Microfone indisponível neste navegador');
-      return;
-    }
-
-    navigator.mediaDevices
-      .getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
-      .then((s) => {
-        if (cancelled) {
-          s.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        stream = s;
-        setError(null);
-        ctx = new AudioContext();
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 512;
-        ctx.createMediaStreamSource(s).connect(analyser);
-        const buf = new Uint8Array(analyser.fftSize);
-        let lastLoud = -Infinity;
-
-        const tick = () => {
-          analyser.getByteTimeDomainData(buf);
-          let sum = 0;
-          for (const v of buf) {
-            const x = (v - 128) / 128;
-            sum += x * x;
-          }
-          const now = performance.now();
-          if (Math.sqrt(sum / buf.length) > SPEAKING_THRESHOLD) lastLoud = now;
-          setSpeaking(now - lastLoud < SPEAKING_HOLD_MS);
-          raf = requestAnimationFrame(tick);
-        };
-        tick();
-      })
-      .catch(() => {
-        if (!cancelled) setError('Sem permissão para usar o microfone');
-      });
-
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(raf);
-      stream?.getTracks().forEach((t) => t.stop());
-      void ctx?.close();
-      setSpeaking(false);
-    };
-  }, [active]);
-
-  return { speaking: speaking && !muted, error };
+export interface VoiceMember {
+  identity: string;
+  name: string;
+  isLocal: boolean;
+  speaking: boolean;
+  micMuted: boolean;
+  camera: Track | null;
+  screen: Track | null;
 }
 
-/** Faz os participantes fictícios "falarem" em turnos aleatórios. */
-export function useSimulatedSpeakers(userIds: string[]) {
-  const [speaking, setSpeaking] = useState<Set<string>>(new Set());
-  const key = userIds.join(',');
+export type VoiceStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error';
 
-  useEffect(() => {
-    if (!userIds.length) {
-      setSpeaking(new Set());
-      return;
-    }
-    const id = setInterval(() => {
-      setSpeaking((prev) => {
-        const next = new Set<string>();
-        for (const u of userIds) {
-          // Quem está falando tende a continuar; quem está quieto raramente começa.
-          const chance = prev.has(u) ? 0.7 : 0.08;
-          if (Math.random() < chance) next.add(u);
-        }
-        return next;
-      });
-    }, 400);
-    return () => clearInterval(id);
-  }, [key]);
-
-  return speaking;
-}
-
-export interface LocalMedia {
-  camera: MediaStream | null;
-  screen: MediaStream | null;
+export interface VoiceSession {
+  status: VoiceStatus;
+  /** Falha de conexão (a sala não funciona). */
   error: string | null;
+  /** Problema com um dispositivo; a conexão continua. */
+  deviceError: string | null;
+  members: VoiceMember[];
+  cameraOn: boolean;
+  screenOn: boolean;
+  /** O navegador bloqueou a reprodução de áudio até um clique. */
+  audioBlocked: boolean;
   toggleCamera: () => void;
   toggleScreen: () => void;
+  startAudio: () => void;
+  retry: () => void;
 }
 
-const stopStream = (s: MediaStream | null) => s?.getTracks().forEach((t) => t.stop());
+/** Quem está em cada canal de voz (chave: id do canal), segundo o servidor. */
+export type Occupancy = Record<string, { identity: string; name: string }[]>;
 
-/**
- * Webcam e compartilhamento de tela enquanto você estiver numa sala de voz.
- * Sair da sala desliga os dois; parar pelo aviso do navegador também é detectado.
- */
-export function useLocalMedia(connected: boolean): LocalMedia {
-  const [camera, setCamera] = useState<MediaStream | null>(null);
-  const [screen, setScreen] = useState<MediaStream | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const cameraRef = useRef<MediaStream | null>(null);
-  const screenRef = useRef<MediaStream | null>(null);
-  const connectedRef = useRef(connected);
-  connectedRef.current = connected;
+/* ---------------------------------------------------------------- utilidades */
 
-  const setCam = (s: MediaStream | null) => {
-    cameraRef.current = s;
-    setCamera(s);
-  };
-  const setScr = (s: MediaStream | null) => {
-    screenRef.current = s;
-    setScreen(s);
-  };
+const PALETTE = ['#5865f2', '#eb459e', '#f0b232', '#23a55a', '#00a8fc', '#f23f43', '#9b59b6', '#e67e22'];
 
-  useEffect(() => {
-    if (connected) return;
-    stopStream(cameraRef.current);
-    stopStream(screenRef.current);
-    setCam(null);
-    setScr(null);
-    setError(null);
-  }, [connected]);
+/** Cor estável por pessoa, igual em todos os navegadores. */
+export function colorFor(identity: string) {
+  let h = 0;
+  for (const c of identity) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return PALETTE[h % PALETTE.length];
+}
 
-  useEffect(
-    () => () => {
-      stopStream(cameraRef.current);
-      stopStream(screenRef.current);
-    },
-    [],
-  );
-
-  /** Guarda o stream só se ainda estivermos na sala; o navegador pode demorar a responder. */
-  const adopt = (s: MediaStream, set: (s: MediaStream | null) => void, ref: React.MutableRefObject<MediaStream | null>) => {
-    if (!connectedRef.current) {
-      stopStream(s);
-      return;
-    }
-    s.getVideoTracks()[0]?.addEventListener('ended', () => {
-      if (ref.current === s) set(null);
-    });
-    set(s);
-    setError(null);
-  };
-
-  const toggleCamera = useCallback(async () => {
-    if (cameraRef.current) {
-      stopStream(cameraRef.current);
-      setCam(null);
-      return;
-    }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setError('Câmera indisponível neste navegador');
-      return;
-    }
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
-      adopt(s, setCam, cameraRef);
-    } catch {
-      setError('Sem permissão para usar a câmera');
-    }
-  }, []);
-
-  const toggleScreen = useCallback(async () => {
-    if (screenRef.current) {
-      stopStream(screenRef.current);
-      setScr(null);
-      return;
-    }
-    if (!navigator.mediaDevices?.getDisplayMedia) {
-      setError('Compartilhamento de tela indisponível neste navegador');
-      return;
-    }
-    try {
-      const s = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-      adopt(s, setScr, screenRef);
-    } catch {
-      setError('Compartilhamento de tela cancelado ou bloqueado');
-    }
-  }, []);
-
-  return { camera, screen, error, toggleCamera, toggleScreen };
+export function memberUser(m: { identity: string; name: string }): User {
+  return { id: m.identity, name: m.name, color: colorFor(m.identity), status: 'online' };
 }
 
 /** Sons curtos de entrar/sair, sintetizados para não depender de arquivos de áudio. */
@@ -224,4 +74,263 @@ export function playVoiceSound(kind: 'join' | 'leave') {
   } catch {
     // sem Web Audio: segue sem som
   }
+}
+
+function errorMessage(status: number, code?: string) {
+  if (status === 503 || code === 'not_configured') {
+    return 'Servidor de voz não configurado: defina LIVEKIT_URL, LIVEKIT_API_KEY e LIVEKIT_API_SECRET.';
+  }
+  return `Não foi possível entrar na sala (erro ${status}).`;
+}
+
+function publishedTrack(p: Participant, source: Track.Source) {
+  const pub = p.getTrackPublication(source);
+  return pub && !pub.isMuted && pub.track ? pub.track : null;
+}
+
+function snapshot(room: Room): VoiceMember[] {
+  const all: Participant[] = [room.localParticipant, ...room.remoteParticipants.values()];
+  return all.map((p) => ({
+    identity: p.identity,
+    name: p.name || p.identity,
+    isLocal: p === room.localParticipant,
+    speaking: p.isSpeaking,
+    micMuted: !p.isMicrophoneEnabled,
+    camera: publishedTrack(p, Track.Source.Camera),
+    screen: publishedTrack(p, Track.Source.ScreenShare),
+  }));
+}
+
+/* ---------------------------------------------------------------- sessão */
+
+/**
+ * Conecta na sala LiveKit do canal de voz atual e mantém o estado da chamada.
+ * Trocar de canal desconecta da sala antiga e entra na nova.
+ */
+export function useVoiceSession(
+  voice: VoiceConnection | null,
+  profile: Profile,
+  muted: boolean,
+  deafened: boolean,
+): VoiceSession {
+  const [status, setStatus] = useState<VoiceStatus>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const [deviceError, setDeviceError] = useState<string | null>(null);
+  const [members, setMembers] = useState<VoiceMember[]>([]);
+  const [audioBlocked, setAudioBlocked] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const roomRef = useRef<Room | null>(null);
+  const deafenedRef = useRef(deafened);
+  deafenedRef.current = deafened;
+
+  const channelId = voice?.channelId ?? null;
+
+  useEffect(() => {
+    if (!channelId) {
+      setStatus('idle');
+      setError(null);
+      setDeviceError(null);
+      setMembers([]);
+      return;
+    }
+
+    let cancelled = false;
+    const room = new Room({
+      adaptiveStream: true,
+      dynacast: true,
+      audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    roomRef.current = room;
+    setStatus('connecting');
+    setError(null);
+    setDeviceError(null);
+
+    const refresh = () => {
+      if (!cancelled) setMembers(snapshot(room));
+    };
+
+    room
+      .on(RoomEvent.ParticipantConnected, () => {
+        if (!deafenedRef.current) playVoiceSound('join');
+        refresh();
+      })
+      .on(RoomEvent.ParticipantDisconnected, () => {
+        if (!deafenedRef.current) playVoiceSound('leave');
+        refresh();
+      })
+      .on(RoomEvent.TrackSubscribed, (track) => {
+        if (track.kind === Track.Kind.Audio) {
+          const el = track.attach();
+          el.muted = deafenedRef.current;
+          document.body.appendChild(el);
+        }
+        refresh();
+      })
+      .on(RoomEvent.TrackUnsubscribed, (track) => {
+        track.detach().forEach((el) => el.remove());
+        refresh();
+      })
+      .on(RoomEvent.TrackMuted, refresh)
+      .on(RoomEvent.TrackUnmuted, refresh)
+      .on(RoomEvent.LocalTrackPublished, refresh)
+      .on(RoomEvent.LocalTrackUnpublished, refresh)
+      .on(RoomEvent.ActiveSpeakersChanged, refresh)
+      .on(RoomEvent.ParticipantNameChanged, refresh)
+      .on(RoomEvent.Reconnecting, () => !cancelled && setStatus('reconnecting'))
+      .on(RoomEvent.Reconnected, () => !cancelled && setStatus('connected'))
+      .on(RoomEvent.AudioPlaybackStatusChanged, () => !cancelled && setAudioBlocked(!room.canPlaybackAudio))
+      .on(RoomEvent.Disconnected, () => {
+        if (!cancelled) {
+          setStatus('error');
+          setError('A conexão com a sala caiu.');
+        }
+      });
+
+    (async () => {
+      try {
+        const res = await fetch('/api/livekit?action=token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channelId, identity: profile.id, name: profile.name }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(errorMessage(res.status, data.error));
+        if (cancelled) return;
+
+        try {
+          await room.connect(data.url, data.token);
+        } catch (err) {
+          console.error('[voz] falha ao conectar no LiveKit', err);
+          throw new Error('Não foi possível conectar ao servidor de voz. Confira o LIVEKIT_URL e sua internet.');
+        }
+        if (cancelled) return;
+        // O microfone é ligado pelo efeito de "silenciar" logo abaixo, ao ver o status mudar.
+        setStatus('connected');
+        setAudioBlocked(!room.canPlaybackAudio);
+        refresh();
+      } catch (err) {
+        if (cancelled) return;
+        setStatus('error');
+        setError(err instanceof Error ? err.message : 'Não foi possível entrar na sala.');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      room.removeAllListeners();
+      for (const p of room.remoteParticipants.values()) {
+        for (const pub of p.audioTrackPublications.values()) pub.track?.detach().forEach((el) => el.remove());
+      }
+      void room.disconnect();
+      roomRef.current = null;
+      setMembers([]);
+      setAudioBlocked(false);
+    };
+    // O nome só vale para a próxima entrada: mudar o nome não derruba a chamada.
+  }, [channelId, profile.id, attempt]);
+
+  // Silenciar = parar de publicar o microfone.
+  useEffect(() => {
+    const room = roomRef.current;
+    if (!room || status !== 'connected') return;
+    room.localParticipant
+      .setMicrophoneEnabled(!muted)
+      .then(() => setMembers(snapshot(room)))
+      .catch(() => setDeviceError('Sem permissão para usar o microfone. Você só vai ouvir.'));
+  }, [muted, status]);
+
+  // Desativar o áudio = silenciar tudo o que chega dos outros.
+  useEffect(() => {
+    const room = roomRef.current;
+    if (!room) return;
+    for (const p of room.remoteParticipants.values()) {
+      for (const pub of p.audioTrackPublications.values()) {
+        pub.track?.attachedElements.forEach((el) => (el.muted = deafened));
+      }
+    }
+  }, [deafened, members]);
+
+  const toggleCamera = useCallback(async () => {
+    const room = roomRef.current;
+    if (!room) return;
+    const lp = room.localParticipant;
+    try {
+      await lp.setCameraEnabled(!lp.isCameraEnabled, { resolution: { width: 1280, height: 720 } });
+      setDeviceError(null);
+    } catch {
+      setDeviceError('Sem permissão para usar a câmera.');
+    }
+    setMembers(snapshot(room));
+  }, []);
+
+  const toggleScreen = useCallback(async () => {
+    const room = roomRef.current;
+    if (!room) return;
+    const lp = room.localParticipant;
+    try {
+      await lp.setScreenShareEnabled(!lp.isScreenShareEnabled, { audio: true });
+      setDeviceError(null);
+    } catch {
+      setDeviceError('Compartilhamento de tela cancelado ou bloqueado.');
+    }
+    setMembers(snapshot(room));
+  }, []);
+
+  const startAudio = useCallback(() => {
+    void roomRef.current?.startAudio().then(() => setAudioBlocked(false));
+  }, []);
+
+  const local = members.find((m) => m.isLocal);
+  return {
+    status,
+    error,
+    deviceError,
+    members,
+    cameraOn: !!local?.camera,
+    screenOn: !!local?.screen,
+    audioBlocked,
+    toggleCamera,
+    toggleScreen,
+    startAudio,
+    retry: () => setAttempt((a) => a + 1),
+  };
+}
+
+/* ---------------------------------------------------------------- presença */
+
+const OCCUPANCY_POLL_MS = 10_000;
+
+/**
+ * Consulta periodicamente quem está em cada canal de voz, para a barra lateral
+ * mostrar as pessoas mesmo antes de você entrar. Só consulta com a aba visível.
+ */
+export function useVoiceOccupancy(refreshKey: string | null): Occupancy {
+  const [occupancy, setOccupancy] = useState<Occupancy>({});
+
+  useEffect(() => {
+    let stopped = false;
+    const load = async () => {
+      if (document.visibilityState !== 'visible') return;
+      try {
+        const res = await fetch('/api/livekit?action=rooms');
+        if (res.status === 503) {
+          stopped = true; // sem LiveKit configurado: não adianta insistir
+          return;
+        }
+        if (res.ok) setOccupancy((await res.json()).occupancy ?? {});
+      } catch {
+        // rede instável: tenta de novo no próximo ciclo
+      }
+    };
+    void load();
+    const id = setInterval(() => !stopped && void load(), OCCUPANCY_POLL_MS);
+    const onVisible = () => !stopped && void load();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [refreshKey]);
+
+  return occupancy;
 }
