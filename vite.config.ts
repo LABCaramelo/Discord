@@ -14,9 +14,26 @@ function apiDev(): Plugin {
   };
 }
 
+/**
+ * Credenciais do LiveKit vêm do .env.local (nunca vão para o bundle do navegador).
+ * O Vite reinicia no mesmo processo quando o .env.local muda, e o loadEnv dá prioridade
+ * ao que já está em process.env; por isso removemos o que nós mesmos injetamos antes de
+ * reler. Variáveis definidas no terminal continuam valendo.
+ */
+function loadLiveKitEnv(mode: string) {
+  const g = globalThis as { __liveKitInjected?: Set<string> };
+  const injected = (g.__liveKitInjected ??= new Set());
+  for (const key of injected) delete process.env[key];
+  injected.clear();
+  for (const [key, value] of Object.entries(loadEnv(mode, process.cwd(), 'LIVEKIT_'))) {
+    if (key in process.env) continue;
+    process.env[key] = value;
+    injected.add(key);
+  }
+}
+
 export default defineConfig(({ mode }) => {
-  // Credenciais do LiveKit vêm do .env.local (nunca vão para o bundle do navegador).
-  Object.assign(process.env, loadEnv(mode, process.cwd(), 'LIVEKIT_'));
+  loadLiveKitEnv(mode);
   return {
     plugins: [react(), apiDev()],
     server: { port: 5190 },
