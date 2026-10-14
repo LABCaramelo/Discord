@@ -1,0 +1,127 @@
+import { useEffect, useMemo, useRef } from 'react';
+import { ME, directMessages, servers, users } from './data';
+import { useAppStore, voiceParticipants } from './store';
+import { playVoiceSound, useLocalMedia, useMicSpeaking, useSimulatedSpeakers } from './voice';
+import { Avatar } from './components/Avatar';
+import { Chat } from './components/Chat';
+import { FriendsView } from './components/Friends';
+import { MemberList } from './components/MemberList';
+import { ServerRail } from './components/ServerRail';
+import { ChannelIcon, HomeSidebar, ServerSidebar, type VoiceUi } from './components/Sidebar';
+import { TitleBar } from './components/TitleBar';
+import { VoiceView } from './components/VoiceView';
+
+export function App() {
+  const [state, dispatch] = useAppStore();
+  const { view } = state;
+
+  // Voz: microfone real para você, falas simuladas para os outros participantes da sua sala.
+  const mic = useMicSpeaking(!!state.voice, state.muted);
+  const others = state.voice ? voiceParticipants(state.voice.channelId, null) : [];
+  const simulated = useSimulatedSpeakers(others);
+  const speaking = useMemo(() => {
+    const set = new Set(simulated);
+    if (mic.speaking) set.add(ME);
+    return set;
+  }, [simulated, mic.speaking]);
+  const media = useLocalMedia(!!state.voice);
+  const voiceUi: VoiceUi = { speaking, micError: mic.error, media };
+
+  const voiceKey = state.voice ? `${state.voice.serverId}:${state.voice.channelId}` : null;
+  const prevVoiceKey = useRef(voiceKey);
+  useEffect(() => {
+    if (prevVoiceKey.current === voiceKey) return;
+    // Com o áudio desativado você também não ouve os sons de entrar/sair.
+    if (!state.deafened) playVoiceSound(voiceKey ? 'join' : 'leave');
+    prevVoiceKey.current = voiceKey;
+  }, [voiceKey, state.deafened]);
+
+  let title = 'Amigos';
+  let sidebar: React.ReactNode;
+  let content: React.ReactNode;
+
+  if (view.kind === 'server') {
+    const server = servers.find((s) => s.id === view.serverId)!;
+    const channel = server.categories.flatMap((c) => c.channels).find((c) => c.id === state.channelByServer[server.id])!;
+    title = server.name;
+    sidebar = <ServerSidebar server={server} state={state} voiceUi={voiceUi} dispatch={dispatch} />;
+    content = channel.kind === 'voice' ? (
+      <VoiceView
+        serverId={server.id}
+        channel={channel}
+        state={state}
+        speaking={speaking}
+        micError={mic.error}
+        media={media}
+        dispatch={dispatch}
+      />
+    ) : (
+      <>
+        <Chat
+          conversationId={channel.id}
+          title={channel.name}
+          icon={<ChannelIcon channel={channel} size={24} />}
+          topic={channel.topic}
+          placeholder={`Conversar em #${channel.name}`}
+          welcome={
+            <>
+              <div className="welcome-icon">
+                <ChannelIcon channel={channel} size={42} />
+              </div>
+              <h2>Bem-vindo(a) a #{channel.name}!</h2>
+              <p>Este é o começo do canal #{channel.name}.</p>
+            </>
+          }
+          messages={state.messages[channel.id] ?? []}
+          showMembers={state.showMembers}
+          membersToggle
+          dispatch={dispatch}
+        />
+        {state.showMembers && <MemberList server={server} myStatus={state.myStatus} />}
+      </>
+    );
+  } else {
+    sidebar = <HomeSidebar dmId={view.dmId} state={state} voiceUi={voiceUi} dispatch={dispatch} />;
+    const dm = directMessages.find((d) => d.id === view.dmId);
+    if (dm) {
+      const user = users[dm.userId];
+      title = user.name;
+      content = (
+        <Chat
+          conversationId={dm.id}
+          title={user.name}
+          icon={<Avatar user={user} size={24} status={user.status} ring="var(--bg-primary)" />}
+          placeholder={`Conversar com @${user.name}`}
+          welcome={
+            <>
+              <Avatar user={user} size={80} />
+              <h2>{user.name}</h2>
+              <p>
+                Este é o começo do seu histórico de mensagens diretas com <strong>{user.name}</strong>.
+              </p>
+            </>
+          }
+          messages={state.messages[dm.id] ?? []}
+          showMembers={false}
+          membersToggle={false}
+          dispatch={dispatch}
+        />
+      );
+    } else {
+      content = <FriendsView dispatch={dispatch} />;
+    }
+  }
+
+  return (
+    <div className="app">
+      <TitleBar title={title} />
+      <div className="app-body">
+        <ServerRail view={view} dispatch={dispatch} />
+        <div className="app-panel">
+          {sidebar}
+          <div className="app-content">{content}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
