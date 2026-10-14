@@ -1,10 +1,23 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { Track } from 'livekit-client';
-import { Hangup, Headphones, Mic, ScreenShare, Speaker, Video } from '../icons';
+import {
+  ChatBubble,
+  Close,
+  Fullscreen,
+  FullscreenExit,
+  Grid,
+  Hangup,
+  Headphones,
+  Mic,
+  ScreenShare,
+  Speaker,
+  Video,
+} from '../icons';
 import type { Action, State } from '../store';
-import type { Channel } from '../types';
-import { memberUser, type Occupancy, type VoiceSession } from '../voice';
+import type { Channel, Message } from '../types';
+import { memberUser, type Occupancy, type VoiceMember, type VoiceSession } from '../voice';
 import { Avatar } from './Avatar';
+import { Conversation } from './Chat';
 
 interface Props {
   serverId: string;
@@ -30,28 +43,135 @@ export function TrackVideo({ track, mirrored }: { track: Track; mirrored?: boole
 
 export function VoiceView({ serverId, channel, state, session, occupancy, dispatch }: Props) {
   const connected = state.voice?.channelId === channel.id;
+  const messages = state.messages[channel.id] ?? [];
+  const showChat = state.showVoiceChat;
+  const unread = useUnread(messages.length, showChat);
 
   return (
     <main className="voice-view">
-      <header className="voice-view-header">
-        <Speaker size={24} />
-        <h1>{channel.name}</h1>
-      </header>
+      <section className="voice-stage">
+        <header className="voice-view-header">
+          <Speaker size={24} />
+          <h1>{channel.name}</h1>
+          <button
+            className={`voice-chat-toggle ${showChat ? 'on' : ''}`}
+            onClick={() => dispatch({ type: 'toggleVoiceChat' })}
+            aria-pressed={showChat}
+            aria-label={
+              showChat ? 'Ocultar chat' : unread ? `Mostrar chat (${unread} ${unread === 1 ? 'nova' : 'novas'})` : 'Mostrar chat'
+            }
+            title={showChat ? 'Ocultar chat' : 'Mostrar chat'}
+          >
+            <ChatBubble size={24} />
+            {unread > 0 && <span className="unread-badge">{unread > 99 ? '99+' : unread}</span>}
+          </button>
+        </header>
 
-      {connected ? <Call state={state} session={session} dispatch={dispatch} /> : (
-        <Lobby
+        {connected ? <Call state={state} session={session} dispatch={dispatch} /> : (
+          <Lobby
+            channel={channel}
+            people={occupancy[channel.id] ?? []}
+            onJoin={() => dispatch({ type: 'joinVoice', serverId, channelId: channel.id })}
+          />
+        )}
+      </section>
+
+      {showChat && (
+        <VoiceChat
           channel={channel}
-          people={occupancy[channel.id] ?? []}
-          onJoin={() => dispatch({ type: 'joinVoice', serverId, channelId: channel.id })}
+          messages={messages}
+          canSend={connected && session.status === 'connected'}
+          session={session}
+          onClose={() => dispatch({ type: 'toggleVoiceChat' })}
         />
       )}
     </main>
   );
 }
 
+/** Quantas mensagens chegaram enquanto o chat estava fechado. */
+function useUnread(count: number, open: boolean) {
+  const [seen, setSeen] = useState(count);
+  useEffect(() => {
+    if (open) setSeen(count);
+  }, [open, count]);
+  return open ? 0 : Math.max(0, count - seen);
+}
+
+function VoiceChat({
+  channel,
+  messages,
+  canSend,
+  session,
+  onClose,
+}: {
+  channel: Channel;
+  messages: Message[];
+  canSend: boolean;
+  session: VoiceSession;
+  onClose: () => void;
+}) {
+  return (
+    <aside className="voice-chat" aria-label={`Chat de ${channel.name}`}>
+      <header className="voice-chat-header">
+        <Speaker size={20} />
+        <h2>{channel.name}</h2>
+        <button onClick={onClose} aria-label="Fechar chat" title="Fechar chat">
+          <Close size={20} />
+        </button>
+      </header>
+      <Conversation
+        conversationId={channel.id}
+        welcome={
+          <>
+            <div className="welcome-icon">
+              <Speaker size={36} />
+            </div>
+            <h2>Bem-vindo(a) a {channel.name}!</h2>
+            <p>As mensagens deste chat chegam a todos que estão na sala de voz.</p>
+          </>
+        }
+        messages={messages}
+        placeholder={canSend ? `Conversar em ${channel.name}` : 'Entre na sala de voz para conversar'}
+        disabled={!canSend}
+        onSend={session.sendChat}
+        onDelete={canSend ? session.deleteChat : undefined}
+      />
+    </aside>
+  );
+}
+
+/* ---------------------------------------------------------------- chamada */
+
+/** Um quadro da chamada: a tela compartilhada de alguém ou a própria pessoa (câmera ou avatar). */
+interface TileInfo {
+  key: string;
+  member: VoiceMember;
+  screen: boolean;
+}
+
+function videoOf(tile: TileInfo) {
+  return tile.screen ? tile.member.screen : tile.member.camera;
+}
+
 function Call({ state, session, dispatch }: { state: State; session: VoiceSession; dispatch: (a: Action) => void }) {
-  const screens = session.members.filter((m) => m.screen);
-  const tileCount = session.members.length + screens.length;
+  const tiles: TileInfo[] = [
+    ...session.members.filter((m) => m.screen).map((m) => ({ key: `${m.identity}:tela`, member: m, screen: true })),
+    ...session.members.map((m) => ({ key: m.identity, member: m, screen: false })),
+  ];
+  const [focusedKey, setFocusedKey] = useState<string | null>(null);
+  // Se a transmissão ampliada acabar (ou a câmera desligar), volta sozinho para a grade.
+  const focused = tiles.find((t) => t.key === focusedKey && videoOf(t)) ?? null;
+
+  useEffect(() => {
+    if (!focused) return;
+    const onKey = (e: KeyboardEvent) => {
+      const typing = e.target instanceof HTMLElement && e.target.closest('textarea, input');
+      if (e.key === 'Escape' && !typing && !document.fullscreenElement) setFocusedKey(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [focused]);
 
   return (
     <>
@@ -67,43 +187,24 @@ function Call({ state, session, dispatch }: { state: State; session: VoiceSessio
         <div className="voice-lobby">
           <p>Conectando…</p>
         </div>
+      ) : focused ? (
+        <div className="voice-focus">
+          <div className="voice-focus-main">
+            <CallTile tile={focused} mode="focus" onGrid={() => setFocusedKey(null)} />
+          </div>
+          <div className="voice-strip">
+            {tiles
+              .filter((t) => t !== focused)
+              .map((t) => (
+                <CallTile key={t.key} tile={t} mode="strip" onFocus={() => setFocusedKey(t.key)} />
+              ))}
+          </div>
+        </div>
       ) : (
-        <div className="voice-grid" data-count={Math.min(tileCount, 4)}>
-          {screens.map((m) => (
-            <div key={`${m.identity}-screen`} className="voice-tile screen">
-              <TrackVideo track={m.screen!} />
-              <span className="live-badge">AO VIVO</span>
-              <span className="voice-tile-name">
-                <ScreenShare size={14} />
-                Tela de {m.name}
-              </span>
-            </div>
+        <div className="voice-grid" data-count={Math.min(tiles.length, 4)}>
+          {tiles.map((t) => (
+            <CallTile key={t.key} tile={t} mode="grid" onFocus={() => setFocusedKey(t.key)} />
           ))}
-          {session.members.map((m) => {
-            const user = memberUser(m);
-            return (
-              <div key={m.identity} className={`voice-tile ${m.speaking ? 'speaking' : ''} ${m.camera ? 'video' : ''}`}>
-                {m.camera ? (
-                  // A própria câmera aparece espelhada, como num espelho.
-                  <TrackVideo track={m.camera} mirrored={m.isLocal} />
-                ) : (
-                  <>
-                    <div className="voice-tile-bg" style={{ background: user.color }} />
-                    <Avatar user={user} size={80} />
-                  </>
-                )}
-                <span className="voice-tile-name">
-                  {m.micMuted && (
-                    <span className="slashed">
-                      <Mic size={14} />
-                    </span>
-                  )}
-                  {m.name}
-                  {m.isLocal && ' (você)'}
-                </span>
-              </div>
-            );
-          })}
         </div>
       )}
 
@@ -165,6 +266,102 @@ function Call({ state, session, dispatch }: { state: State; session: VoiceSessio
         </button>
       </div>
     </>
+  );
+}
+
+function useIsFullscreen(ref: RefObject<HTMLElement>) {
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    const update = () => setFullscreen(!!ref.current && document.fullscreenElement === ref.current);
+    document.addEventListener('fullscreenchange', update);
+    return () => document.removeEventListener('fullscreenchange', update);
+  }, [ref]);
+  return fullscreen;
+}
+
+/**
+ * grid: na grade, clicar num vídeo amplia; focus: o vídeo ampliado (duplo clique = tela cheia);
+ * strip: miniaturas embaixo do vídeo ampliado, clicar troca qual está ampliado.
+ */
+function CallTile({
+  tile,
+  mode,
+  onFocus,
+  onGrid,
+}: {
+  tile: TileInfo;
+  mode: 'grid' | 'focus' | 'strip';
+  onFocus?: () => void;
+  onGrid?: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const fullscreen = useIsFullscreen(ref);
+  const { member: m, screen } = tile;
+  const video = videoOf(tile);
+  const user = memberUser(m);
+  const label = screen ? `a tela de ${m.name}` : `a câmera de ${m.name}`;
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void ref.current?.requestFullscreen().catch(() => {});
+  };
+
+  return (
+    <div
+      ref={ref}
+      className={`voice-tile ${mode} ${screen ? 'screen' : ''} ${video && !screen ? 'video' : ''} ${
+        !screen && m.speaking ? 'speaking' : ''
+      }`}
+    >
+      {video ? (
+        // A própria câmera aparece espelhada, como num espelho.
+        <TrackVideo track={video} mirrored={!screen && m.isLocal} />
+      ) : (
+        <>
+          <div className="voice-tile-bg" style={{ background: user.color }} />
+          <Avatar user={user} size={mode === 'strip' ? 48 : 80} />
+        </>
+      )}
+
+      {video &&
+        (mode === 'focus' || fullscreen ? (
+          <div className="voice-tile-hit" onDoubleClick={toggleFullscreen} />
+        ) : (
+          <button className="voice-tile-hit" onClick={onFocus} aria-label={`Ampliar ${label}`} title="Clique para ampliar" />
+        ))}
+
+      {screen && <span className="live-badge">AO VIVO</span>}
+      <span className="voice-tile-name">
+        {screen ? (
+          <ScreenShare size={14} />
+        ) : (
+          m.micMuted && (
+            <span className="slashed">
+              <Mic size={14} />
+            </span>
+          )
+        )}
+        {screen ? `Tela de ${m.name}` : m.name}
+        {!screen && m.isLocal && ' (você)'}
+      </span>
+
+      {video && mode !== 'strip' && (
+        <div className="voice-tile-actions">
+          {mode === 'focus' && (
+            <button onClick={onGrid} aria-label="Voltar para a grade" title="Voltar para a grade (Esc)">
+              <Grid size={20} />
+            </button>
+          )}
+          <button
+            onClick={toggleFullscreen}
+            aria-label={fullscreen ? 'Sair da tela cheia' : `Ver ${label} em tela cheia`}
+            title={fullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
+          >
+            {fullscreen ? <FullscreenExit size={20} /> : <Fullscreen size={20} />}
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

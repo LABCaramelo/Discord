@@ -3,6 +3,7 @@ import { ME, users } from '../data';
 import { Bell, Emoji, Gif, Gift, Members, Pin, Plus, Search, Threads } from '../icons';
 import type { Action } from '../store';
 import type { Message, User } from '../types';
+import { memberUser } from '../voice';
 import { Avatar } from './Avatar';
 
 /** Mensagens do mesmo autor com menos de 7 minutos de intervalo são agrupadas. */
@@ -22,12 +23,6 @@ interface Props {
 }
 
 export function Chat(p: Props) {
-  const endRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ block: 'end' });
-  }, [p.conversationId, p.messages.length]);
-
   return (
     <main className="chat">
       <header className="chat-header">
@@ -69,32 +64,60 @@ export function Chat(p: Props) {
         </div>
       </header>
 
-      <div className="messages" role="log" aria-live="polite">
-        <div className="messages-welcome">{p.welcome}</div>
-        <MessageList
-          messages={p.messages}
-          onDelete={(id) => p.dispatch({ type: 'delete', conversationId: p.conversationId, messageId: id })}
-        />
-        <div ref={endRef} className="messages-end" />
-      </div>
-
-      <Composer
-        key={p.conversationId}
+      <Conversation
+        conversationId={p.conversationId}
+        welcome={p.welcome}
+        messages={p.messages}
         placeholder={p.placeholder}
         onSend={(content) => p.dispatch({ type: 'send', conversationId: p.conversationId, content })}
+        onDelete={(id) => p.dispatch({ type: 'delete', conversationId: p.conversationId, messageId: id })}
       />
     </main>
   );
 }
 
-function MessageList({ messages, onDelete }: { messages: Message[]; onDelete: (id: string) => void }) {
+interface ConversationProps {
+  conversationId: string;
+  welcome: React.ReactNode;
+  messages: Message[];
+  placeholder: string;
+  /** Mostra a caixa de envio, mas sem deixar escrever. */
+  disabled?: boolean;
+  onSend: (content: string) => void;
+  /** Sem esta função, suas mensagens não podem ser apagadas. */
+  onDelete?: (id: string) => void;
+}
+
+/** Mensagens e caixa de envio, usadas nos canais de texto e no chat das salas de voz. */
+export function Conversation(p: ConversationProps) {
+  const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: 'end' });
+  }, [p.conversationId, p.messages.length]);
+
+  return (
+    <>
+      <div className="messages" role="log" aria-live="polite">
+        <div className="messages-welcome">{p.welcome}</div>
+        <MessageList messages={p.messages} onDelete={p.onDelete} />
+        <div ref={endRef} className="messages-end" />
+      </div>
+
+      <Composer key={p.conversationId} placeholder={p.placeholder} disabled={p.disabled} onSend={p.onSend} />
+    </>
+  );
+}
+
+function MessageList({ messages, onDelete }: { messages: Message[]; onDelete?: (id: string) => void }) {
   return (
     <>
       {messages.map((m, i) => {
         const prev = messages[i - 1];
         const newDay = !prev || !sameDay(prev.timestamp, m.timestamp);
         const grouped = !!prev && !newDay && prev.authorId === m.authorId && m.timestamp - prev.timestamp < GROUP_WINDOW_MS;
-        const author = users[m.authorId];
+        // Quem fala nas salas de voz não está no diretório local: usa o nome que veio com a mensagem.
+        const author = users[m.authorId] ?? memberUser({ identity: m.authorId, name: m.authorName ?? 'Alguém' });
         return (
           <Fragment key={m.id}>
             {newDay && (
@@ -124,7 +147,7 @@ function MessageList({ messages, onDelete }: { messages: Message[]; onDelete: (i
                   <RichText text={m.content} />
                 </div>
               </div>
-              {m.authorId === ME && (
+              {m.authorId === ME && onDelete && (
                 <div className="message-actions">
                   <button onClick={() => onDelete(m.id)} title="Excluir mensagem" aria-label="Excluir mensagem">
                     🗑️
@@ -162,7 +185,15 @@ function RichText({ text }: { text: string }) {
   );
 }
 
-function Composer({ placeholder, onSend }: { placeholder: string; onSend: (content: string) => void }) {
+function Composer({
+  placeholder,
+  disabled,
+  onSend,
+}: {
+  placeholder: string;
+  disabled?: boolean;
+  onSend: (content: string) => void;
+}) {
   const [value, setValue] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -178,7 +209,7 @@ function Composer({ placeholder, onSend }: { placeholder: string; onSend: (conte
   }, [value]);
 
   const submit = () => {
-    if (!value.trim()) return;
+    if (disabled || !value.trim()) return;
     onSend(value);
     setValue('');
   };
@@ -191,14 +222,15 @@ function Composer({ placeholder, onSend }: { placeholder: string; onSend: (conte
         submit();
       }}
     >
-      <div className="composer-box">
-        <button type="button" className="composer-attach" aria-label="Enviar arquivo">
+      <div className={`composer-box ${disabled ? 'disabled' : ''}`}>
+        <button type="button" className="composer-attach" aria-label="Enviar arquivo" disabled={disabled}>
           <Plus size={20} />
         </button>
         <textarea
           ref={ref}
           rows={1}
           value={value}
+          disabled={disabled}
           placeholder={placeholder}
           aria-label={placeholder}
           onChange={(e) => setValue(e.target.value)}
@@ -211,13 +243,13 @@ function Composer({ placeholder, onSend }: { placeholder: string; onSend: (conte
           }}
         />
         <div className="composer-tools">
-          <button type="button" aria-label="Presente">
+          <button type="button" className="composer-extra" aria-label="Presente" disabled={disabled}>
             <Gift size={24} />
           </button>
-          <button type="button" aria-label="GIF">
+          <button type="button" className="composer-extra" aria-label="GIF" disabled={disabled}>
             <Gif size={24} />
           </button>
-          <button type="button" aria-label="Emoji" onClick={() => setValue((v) => v + '😄')}>
+          <button type="button" aria-label="Emoji" disabled={disabled} onClick={() => setValue((v) => v + '😄')}>
             <Emoji size={24} />
           </button>
         </div>

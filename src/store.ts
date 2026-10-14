@@ -24,6 +24,7 @@ export interface State {
   messages: Record<string, Message[]>;
   collapsed: Record<string, boolean>;
   showMembers: boolean;
+  showVoiceChat: boolean;
   muted: boolean;
   deafened: boolean;
   myStatus: Status;
@@ -36,9 +37,11 @@ export type Action =
   | { type: 'joinVoice'; serverId: string; channelId: string }
   | { type: 'leaveVoice' }
   | { type: 'send'; conversationId: string; content: string }
+  | { type: 'receive'; conversationId: string; messages: Message[] }
   | { type: 'delete'; conversationId: string; messageId: string }
   | { type: 'toggleCategory'; categoryId: string }
   | { type: 'toggleMembers' }
+  | { type: 'toggleVoiceChat' }
   | { type: 'toggleMute' }
   | { type: 'toggleDeafen' }
   | { type: 'setStatus'; status: Status }
@@ -73,6 +76,7 @@ function initialState(): State {
     messages: seedMessages,
     collapsed: {},
     showMembers: true,
+    showVoiceChat: true,
     muted: false,
     deafened: false,
     myStatus: 'online',
@@ -117,6 +121,15 @@ function reducer(state: State, action: Action): State {
       const list = state.messages[action.conversationId] ?? [];
       return { ...state, messages: { ...state.messages, [action.conversationId]: [...list, message] } };
     }
+    case 'receive': {
+      // Mensagens que chegam de outras pessoas (ou um histórico inteiro): ignora as já conhecidas.
+      const list = state.messages[action.conversationId] ?? [];
+      const known = new Set(list.map((m) => m.id));
+      const fresh = action.messages.filter((m) => !known.has(m.id) && known.add(m.id));
+      if (!fresh.length) return state;
+      const merged = [...list, ...fresh].sort((a, b) => a.timestamp - b.timestamp);
+      return { ...state, messages: { ...state.messages, [action.conversationId]: merged } };
+    }
     case 'delete': {
       const list = state.messages[action.conversationId] ?? [];
       return {
@@ -128,6 +141,8 @@ function reducer(state: State, action: Action): State {
       return { ...state, collapsed: { ...state.collapsed, [action.categoryId]: !state.collapsed[action.categoryId] } };
     case 'toggleMembers':
       return { ...state, showMembers: !state.showMembers };
+    case 'toggleVoiceChat':
+      return { ...state, showVoiceChat: !state.showVoiceChat };
     case 'toggleMute':
       // Reativar o microfone também reativa o áudio, como no Discord.
       return { ...state, muted: !state.muted, deafened: state.muted ? false : state.deafened };

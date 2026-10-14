@@ -20,7 +20,11 @@ export function App() {
   // para o chat, a lista de membros e as salas de voz mostrarem a mesma pessoa.
   users[ME] = { ...users[ME], name: profile.name || 'você', color: colorFor(profile.id) };
 
-  const session = useVoiceSession(state.voice, profile, state.muted, state.deafened);
+  const session = useVoiceSession(state.voice, profile, state.muted, state.deafened, {
+    history: state.voice ? (state.messages[state.voice.channelId] ?? []) : [],
+    receive: (conversationId, messages) => dispatch({ type: 'receive', conversationId, messages }),
+    remove: (conversationId, messageId) => dispatch({ type: 'delete', conversationId, messageId }),
+  });
   const voiceKey = state.voice ? `${state.voice.serverId}:${state.voice.channelId}` : null;
   const occupancy = useVoiceOccupancy(voiceKey);
   const voiceUi: VoiceUi = { session, occupancy };
@@ -44,6 +48,7 @@ export function App() {
     sidebar = <ServerSidebar server={server} state={state} voiceUi={voiceUi} dispatch={dispatch} />;
     content = channel.kind === 'voice' ? (
       <VoiceView
+        key={channel.id}
         serverId={server.id}
         channel={channel}
         state={state}

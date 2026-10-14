@@ -43,6 +43,8 @@ export interface Server {
 export interface Message {
   id: string;
   authorId: string;
+  /** Nome de quem escreveu, para autores fora do diretório local (pessoas das salas de voz). */
+  authorName?: string;
   content: string;
   timestamp: number;
 }

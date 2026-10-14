@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Room, RoomEvent, Track, type Participant } from 'livekit-client';
+import { ME, users } from './data';
 import type { Profile, VoiceConnection } from './store';
-import type { User } from './types';
+import type { Message, User } from './types';
 
 /* ---------------------------------------------------------------- tipos */
 
@@ -21,7 +22,7 @@ export interface VoiceSession {
   status: VoiceStatus;
   /** Falha de conexão (a sala não funciona). */
   error: string | null;
-  /** Problema com um dispositivo; a conexão continua. */
+  /** Problema com um dispositivo ou com um envio; a conexão continua. */
   deviceError: string | null;
   members: VoiceMember[];
   cameraOn: boolean;
@@ -32,6 +33,20 @@ export interface VoiceSession {
   toggleScreen: () => void;
   startAudio: () => void;
   retry: () => void;
+  /** Envia uma mensagem no chat de texto da sala. */
+  sendChat: (content: string) => void;
+  /** Apaga uma mensagem sua do chat da sala, para todos. */
+  deleteChat: (messageId: string) => void;
+}
+
+/**
+ * Liga o chat da sala às mensagens guardadas no app: o histórico do canal atual,
+ * para repassar a quem entrar depois, e onde gravar o que chega.
+ */
+export interface VoiceChatStore {
+  history: Message[];
+  receive: (channelId: string, messages: Message[]) => void;
+  remove: (channelId: string, messageId: string) => void;
 }
 
 /** Quem está em cada canal de voz (chave: id do canal), segundo o servidor. */
@@ -101,6 +116,50 @@ function snapshot(room: Room): VoiceMember[] {
   }));
 }
 
+/* ---------------------------------------------------------------- chat da sala */
+
+/*
+ * O chat das salas de voz não tem servidor próprio: as mensagens vão pela sala do LiveKit
+ * para quem está nela. Quem entra pede o histórico, e uma só pessoa da sala responde.
+ * Localmente suas mensagens usam o autor ME, como nos canais de texto; na rede, o seu id.
+ */
+const CHAT_TOPIC = 'chat';
+const CHAT_HISTORY_LIMIT = 100;
+const CHAT_MAX_LENGTH = 4000;
+
+type ChatPacket =
+  | { type: 'message'; message: Message }
+  | { type: 'delete'; id: string }
+  | { type: 'history-request' }
+  | { type: 'history'; messages: Message[] };
+
+function sendChatPacket(room: Room, packet: ChatPacket, to?: string[]) {
+  return room.localParticipant.sendText(JSON.stringify(packet), { topic: CHAT_TOPIC, destinationIdentities: to });
+}
+
+/** Valida uma mensagem vinda de outra pessoa. */
+function parseChatMessage(raw: unknown, profileId: string): Message | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const { id, authorId, authorName, content, timestamp } = raw as Record<string, unknown>;
+  if (typeof id !== 'string' || typeof authorId !== 'string' || typeof content !== 'string') return null;
+  if (typeof timestamp !== 'number') return null;
+  // Ninguém se passa por alguém do diretório local nem por você. Suas mensagens já estão
+  // guardadas aqui, e as que você apagou não voltam pelo histórico de outra pessoa.
+  if (authorId in users || authorId === profileId) return null;
+  return {
+    id: id.slice(0, 64),
+    authorId,
+    authorName: typeof authorName === 'string' ? authorName.slice(0, 32) : undefined,
+    content: content.slice(0, CHAT_MAX_LENGTH),
+    // Um relógio adiantado não joga a mensagem para o fim da conversa.
+    timestamp: Math.min(timestamp, Date.now()),
+  };
+}
+
+function toWire(m: Message, profile: Profile): Message {
+  return m.authorId === ME ? { ...m, authorId: profile.id, authorName: profile.name } : m;
+}
+
 /* ---------------------------------------------------------------- sessão */
 
 /**
@@ -112,6 +171,7 @@ export function useVoiceSession(
   profile: Profile,
   muted: boolean,
   deafened: boolean,
+  chat: VoiceChatStore,
 ): VoiceSession {
   const [status, setStatus] = useState<VoiceStatus>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -122,6 +182,10 @@ export function useVoiceSession(
   const roomRef = useRef<Room | null>(null);
   const deafenedRef = useRef(deafened);
   deafenedRef.current = deafened;
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
+  const chatRef = useRef(chat);
+  chatRef.current = chat;
 
   const channelId = voice?.channelId ?? null;
 
@@ -186,6 +250,53 @@ export function useVoiceSession(
         }
       });
 
+    const onChatPacket = (packet: Record<string, unknown>, from: string) => {
+      const store = chatRef.current;
+      const profileId = profileRef.current.id;
+      switch (packet.type) {
+        case 'message': {
+          const m = parseChatMessage(packet.message, profileId);
+          // Mensagem nova só vale assinada por quem a enviou.
+          if (m && m.authorId === from) store.receive(channelId, [m]);
+          break;
+        }
+        case 'delete': {
+          const target = store.history.find((m) => m.id === packet.id);
+          if (target && target.authorId === from) store.remove(channelId, target.id);
+          break;
+        }
+        case 'history-request': {
+          // Responde só quem tem o menor id entre os que já estavam, para não repetir o envio.
+          const me = room.localParticipant.identity;
+          const ids = [me, ...[...room.remoteParticipants.values()].map((p) => p.identity)].filter((id) => id !== from);
+          if (ids.sort()[0] !== me || !store.history.length) break;
+          const messages = store.history.slice(-CHAT_HISTORY_LIMIT).map((m) => toWire(m, profileRef.current));
+          void sendChatPacket(room, { type: 'history', messages }, [from]).catch(() => {});
+          break;
+        }
+        case 'history': {
+          if (!Array.isArray(packet.messages)) break;
+          const messages = packet.messages
+            .slice(-CHAT_HISTORY_LIMIT)
+            .map((m) => parseChatMessage(m, profileId))
+            .filter((m): m is Message => !!m);
+          if (messages.length) store.receive(channelId, messages);
+          break;
+        }
+      }
+    };
+
+    room.registerTextStreamHandler(CHAT_TOPIC, (reader, { identity }) => {
+      reader
+        .readAll()
+        .then((text) => {
+          if (cancelled) return;
+          const packet: unknown = JSON.parse(text);
+          if (packet && typeof packet === 'object') onChatPacket(packet as Record<string, unknown>, identity);
+        })
+        .catch((err) => console.warn('[voz] mensagem de chat inválida', err));
+    });
+
     (async () => {
       try {
         const res = await fetch('/api/livekit?action=token', {
@@ -208,6 +319,9 @@ export function useVoiceSession(
         setStatus('connected');
         setAudioBlocked(!room.canPlaybackAudio);
         refresh();
+        if (room.remoteParticipants.size > 0) {
+          void sendChatPacket(room, { type: 'history-request' }).catch(() => {});
+        }
       } catch (err) {
         if (cancelled) return;
         setStatus('error');
@@ -218,6 +332,7 @@ export function useVoiceSession(
     return () => {
       cancelled = true;
       room.removeAllListeners();
+      room.unregisterTextStreamHandler(CHAT_TOPIC);
       for (const p of room.remoteParticipants.values()) {
         for (const pub of p.audioTrackPublications.values()) pub.track?.detach().forEach((el) => el.remove());
       }
@@ -280,6 +395,32 @@ export function useVoiceSession(
     void roomRef.current?.startAudio().then(() => setAudioBlocked(false));
   }, []);
 
+  const sendChat = useCallback(
+    (content: string) => {
+      const room = roomRef.current;
+      const text = content.trim().slice(0, CHAT_MAX_LENGTH);
+      if (!room || !channelId || !text) return;
+      const message: Message = { id: crypto.randomUUID(), authorId: ME, content: text, timestamp: Date.now() };
+      chatRef.current.receive(channelId, [message]);
+      sendChatPacket(room, { type: 'message', message: toWire(message, profileRef.current) }).catch(() =>
+        setDeviceError('Não foi possível enviar a mensagem para a sala.'),
+      );
+    },
+    [channelId],
+  );
+
+  const deleteChat = useCallback(
+    (messageId: string) => {
+      const room = roomRef.current;
+      if (!room || !channelId) return;
+      chatRef.current.remove(channelId, messageId);
+      sendChatPacket(room, { type: 'delete', id: messageId }).catch(() =>
+        setDeviceError('Não foi possível apagar a mensagem para todos.'),
+      );
+    },
+    [channelId],
+  );
+
   const local = members.find((m) => m.isLocal);
   return {
     status,
@@ -293,6 +434,8 @@ export function useVoiceSession(
     toggleScreen,
     startAudio,
     retry: () => setAttempt((a) => a + 1),
+    sendChat,
+    deleteChat,
   };
 }
 

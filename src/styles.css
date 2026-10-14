@@ -695,8 +695,14 @@ textarea {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
   background: #000;
+}
+
+.voice-stage {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .voice-view-header {
@@ -713,6 +719,33 @@ textarea {
   font-size: 16px;
   font-weight: 600;
   color: var(--header-primary);
+}
+
+.voice-chat-toggle {
+  position: relative;
+  margin-left: auto;
+  display: grid;
+  color: var(--interactive-normal);
+}
+.voice-chat-toggle:hover,
+.voice-chat-toggle.on {
+  color: var(--interactive-active);
+}
+.unread-badge {
+  position: absolute;
+  right: -6px;
+  bottom: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--red);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  box-shadow: 0 0 0 3px #000;
 }
 
 .voice-grid {
@@ -775,6 +808,7 @@ textarea {
   position: absolute;
   left: 8px;
   bottom: 8px;
+  max-width: calc(100% - 16px);
   display: flex;
   align-items: center;
   gap: 4px;
@@ -784,6 +818,169 @@ textarea {
   color: #fff;
   font-size: 14px;
   font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  pointer-events: none;
+}
+.voice-tile .live-badge {
+  pointer-events: none;
+}
+
+/* Área clicável sobre o vídeo: na grade amplia; ampliado, duplo clique põe em tela cheia. */
+.voice-tile-hit {
+  position: absolute;
+  inset: 0;
+}
+button.voice-tile-hit {
+  cursor: zoom-in;
+}
+button.voice-tile-hit:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+button.voice-tile-hit:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+
+.voice-tile-actions {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.voice-tile:hover .voice-tile-actions,
+.voice-tile:focus-within .voice-tile-actions {
+  opacity: 1;
+}
+.voice-tile-actions button {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+}
+.voice-tile-actions button:hover {
+  background: rgba(0, 0, 0, 0.85);
+}
+
+/* Vídeo ampliado, com as outras pessoas numa faixa embaixo. */
+.voice-focus {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 16px;
+}
+.voice-focus-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.voice-tile.focus {
+  flex: 1;
+  aspect-ratio: auto;
+  max-height: none;
+}
+.voice-tile.focus .stream-video,
+.voice-tile:fullscreen .stream-video {
+  object-fit: contain;
+}
+.voice-tile:fullscreen {
+  border-radius: 0;
+  outline: 0;
+  background: #000;
+}
+
+.voice-strip {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+}
+.voice-strip::before,
+.voice-strip::after {
+  /* Centraliza a faixa sem cortar o começo quando ela rola. */
+  content: '';
+  margin: auto;
+}
+.voice-tile.strip {
+  flex-shrink: 0;
+  height: 112px;
+}
+.voice-tile.strip .voice-tile-name {
+  left: 4px;
+  bottom: 4px;
+  max-width: calc(100% - 8px);
+  padding: 0 6px;
+  font-size: 12px;
+}
+.voice-tile.strip .live-badge {
+  top: 4px;
+  right: 4px;
+  padding: 0 4px;
+  font-size: 10px;
+}
+
+/* ---------- Chat da sala de voz ---------- */
+
+.voice-chat {
+  width: clamp(260px, 32%, 400px);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  border-left: 1px solid var(--divider);
+}
+.voice-chat-header {
+  height: 48px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--bg-tertiary);
+  box-shadow: 0 1px 0 rgba(4, 4, 5, 0.2);
+  color: var(--channel-icon);
+}
+.voice-chat-header h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--header-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-chat-header button {
+  display: grid;
+  color: var(--interactive-normal);
+}
+.voice-chat-header button:hover {
+  color: var(--interactive-active);
+}
+.voice-chat .messages-welcome h2 {
+  font-size: 24px;
+}
+.voice-chat .message {
+  padding-right: 16px;
+}
+.voice-chat .composer {
+  padding: 0 12px 16px;
+}
+.voice-chat .composer-attach {
+  margin: 10px 12px;
+}
+.voice-chat .composer-extra {
+  display: none;
 }
 
 .voice-warning {
@@ -1322,6 +1519,12 @@ textarea {
 }
 .composer textarea::placeholder {
   color: var(--text-muted);
+}
+.composer-box.disabled {
+  opacity: 0.6;
+}
+.composer-box.disabled :is(button, textarea) {
+  cursor: not-allowed;
 }
 .composer-tools {
   display: flex;

@@ -178,6 +178,30 @@ export const ScreenShare = (p: P) => (
   </svg>
 );
 
+export const ChatBubble = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M12 22a10 10 0 1 0-8.45-4.64c.13.19.11.44-.04.61l-2.06 2.37A1 1 0 0 0 2.2 22H12Z" />
+  </svg>
+);
+
+export const Fullscreen = (p: P) => (
+  <svg {...base(p)} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" />
+  </svg>
+);
+
+export const FullscreenExit = (p: P) => (
+  <svg {...base(p)} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5" />
+  </svg>
+);
+
+export const Grid = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M3 5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5ZM13 5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2V5ZM3 15a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4ZM13 15a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-4Z" />
+  </svg>
+);
+
 /** Logo do botão "Início" no trilho de servidores. */
 export const HomeLogo = (p: P) => (
   <svg {...base(p)}>

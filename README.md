@@ -11,9 +11,13 @@ O que funciona:
 - **Canais de voz reais**: quem abrir o site e entrar no mesmo canal conversa de verdade
   - indicador de quem está falando, silenciar/desativar áudio
   - webcam e compartilhamento de tela (com áudio da aba, quando o navegador permite)
+  - clique numa tela compartilhada (ou câmera) para ampliar; botão de tela cheia e `Esc` para voltar à grade
+  - chat de texto na sala: as mensagens chegam a quem está na chamada, e quem entra depois
+    recebe o histórico de quem já estava lá
   - a barra lateral mostra quem está em cada canal, mesmo antes de você entrar
 
-O chat de texto e os membros continuam fictícios e locais; só a voz/vídeo passa pelo servidor.
+O chat dos canais de texto e os membros continuam fictícios e locais; voz, vídeo e o chat das
+salas de voz passam pelo LiveKit.
 Qualquer pessoa com o link pode entrar nos canais de voz.
 
 Detalhes da janela desktop (barra de título própria, tamanho mínimo 940×500, fundo `#2f3136`)
